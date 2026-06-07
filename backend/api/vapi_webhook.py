@@ -28,9 +28,19 @@ async def handle_vapi_webhook(request: Request):
             return {"status": "ok"}
         elif event_type == "status-update":
             status = message.get("status")
-            logger.info(f"Call status: {status}")
+            logger.info(f"[STATUS] {status}")
+            return {"status": "ok"}
+        elif event_type == "hang":
+            logger.info(f"[HANG] Call ended by system")
+            return {"status": "ok"}
+        elif event_type == "speech-update":
+            speech_status = message.get("status")
+            role = message.get("role", "")
+            if speech_status == "started" and role == "assistant":
+                logger.info(f"[SPEECH] Assistant speaking")
             return {"status": "ok"}
 
+        logger.info(f"[EVENT] {event_type}")
         return {"status": "ok"}
 
     except Exception as e:
@@ -241,9 +251,9 @@ def format_tool_result(tool_name: str, state: dict) -> str:
 
     elif tool_name == "escalate_call":
         return json.dumps({
-            "status": "escalating",
+            "status": "escalated",
             "reason": state.get("escalation_reason", ""),
-            "message": "Transferring to a representative now. Please stay on the line.",
+            "message": "Your request has been logged. Our escalation team will reach out to you shortly. Is there anything else I can help you with before I end this call?",
         })
 
     return json.dumps({"status": "ok"})

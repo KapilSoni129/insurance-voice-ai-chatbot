@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from vapi import Vapi
 from dotenv import load_dotenv
+import httpx
 
 load_dotenv()
 
@@ -28,7 +29,7 @@ SYSTEM_PROMPT = """You are Ava, a friendly and professional AI claims support as
 6. If authenticated successfully, ask if they'd like to check their claim status.
 7. Call get_claim_status with their account_id from the authentication result.
 8. Communicate the claim status clearly. If documents are needed, explain how to submit them.
-9. Ask if there's anything else you can help with.
+9. Ask if there's anything else you can help with. If not hangup the call after saying thank you note
 10. For general questions, use search_faq to find answers.
 11. End the call politely when the caller is done.
 
@@ -44,17 +45,27 @@ SYSTEM_PROMPT = """You are Ava, a friendly and professional AI claims support as
   2. Confirm their phone number.
   3. Ask them to briefly describe the issue or reason they need help (use this as the escalation reason).
   4. Then call escalate_call with the reason.
-- After escalation, tell the caller: "I'm going to hang up now, and you'll receive a call back from our escalation team shortly." Then end the call.
 - For emergencies (medical, fire, immediate danger), use escalate_call with is_emergency=true and advise them to call 911.
 - When reporting claim status, be clear and empathetic, especially for denied claims.
 - If the customer has multiple claims, briefly list them and ask which one they want details on.
-- When the caller says closing phrases, respond with a brief goodbye and agrees to END the call. Do not continue asking questions after the caller is satisfied.
-- If you've completed the caller's request and they confirm they don't need anything else, say goodbye and end the call.
+- When the caller says closing phrases with a brief goodbye and do not have any other requests and use the endCall tool to hang up. Do not continue asking questions after the caller is satisfied.
+- If you've completed the caller's request and they confirm they don't need anything else, say goodbye and use the endCall tool.
+- If the caller goes silent or doesn't respond, say "Are you still there?" and wait. If they still don't respond after that, say "It seems like you may have stepped away. I'll go ahead and end our call. Feel free to call back anytime!" and use the endCall tool.
+- After escalation, tell the caller "I'm going to end this call now, and you'll receive a call back from our escalation team shortly. Goodbye!" then use the endCall tool.
 """
 
 
 def get_tools(webhook_url: str) -> list:
     return [
+        {
+            "type": "endCall",
+            "messages": [
+                {
+                    "type": "request-complete",
+                    "content": "Thank you for calling Observe Insurance. Have a wonderful day!",
+                }
+            ],
+        },
         {
             "type": "function",
             "function": {
@@ -146,6 +157,35 @@ def get_tools(webhook_url: str) -> list:
     ]
 
 
+def apply_hooks(token: str, assistant_id: str):
+    """Apply hooks via raw API (SDK serializes 'on' field incorrectly)."""
+    resp = httpx.patch(
+        f"https://api.vapi.ai/assistant/{assistant_id}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={
+            "hooks": [
+                {
+                    "on": "customer.speech.timeout",
+                    "do": [
+                        {
+                            "type": "say",
+                            "exact": "Are you still there? I'm here if you need anything.",
+                        }
+                    ],
+                    "options": {
+                        "timeoutSeconds": 15,
+                        "triggerMaxCount": 1,
+                    },
+                }
+            ]
+        },
+    )
+    if resp.status_code == 200:
+        print("  Hooks applied (silence timeout: 15s, max 1 prompts)")
+    else:
+        print(f"  Warning: hooks failed ({resp.status_code}): {resp.text[:200]}")
+
+
 def run(server_url: str):
     token = os.getenv("VAPI_PRIVATE_KEY")
     if not token:
@@ -174,10 +214,9 @@ def run(server_url: str):
             first_message="Hello! Thank you for calling Observe Insurance. My name is Ava, and I'm here to help you with your claim. I can see the number you're calling from — is this the phone number associated with your account?",
             server={"url": webhook_url},
             end_call_message="Thank you for calling Observe Insurance. Have a wonderful day!",
-            silence_timeout_seconds=15,
             max_duration_seconds=600,
-            end_call_phrases=["goodbye", "bye", "have a good day", "that's all", "thanks bye"],
         )
+        apply_hooks(token, assistant.id)
         print(f"Assistant UPDATED!")
     else:
         # Create new assistant
@@ -194,10 +233,9 @@ def run(server_url: str):
             first_message="Hello! Thank you for calling Observe Insurance. My name is Ava, and I'm here to help you with your claim. I can see the number you're calling from — is this the phone number associated with your account?",
             server={"url": webhook_url},
             end_call_message="Thank you for calling Observe Insurance. Have a wonderful day!",
-            silence_timeout_seconds=15,
             max_duration_seconds=600,
-            end_call_phrases=["goodbye", "bye", "have a good day", "that's all", "thanks bye"],
         )
+        apply_hooks(token, assistant.id)
         print(f"Assistant CREATED!")
         print(f"  Add to .env: VAPI_ASSISTANT_ID={assistant.id}")
 
