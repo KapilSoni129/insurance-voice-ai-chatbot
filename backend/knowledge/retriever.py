@@ -11,8 +11,21 @@ def get_vectorstore() -> FAISS:
     if _vectorstore is None:
         index_path = os.path.join(os.path.dirname(__file__), "faiss_index")
         embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=settings.openai_api_key)
+        if not os.path.exists(index_path):
+            _build_index(index_path, embeddings)
         _vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
     return _vectorstore
+
+
+def _build_index(index_path: str, embeddings):
+    from langchain_core.documents import Document
+    from backend.knowledge.faq_data import FAQ_DOCUMENTS
+    documents = [
+        Document(page_content=f"Q: {faq['question']}\nA: {faq['answer']}", metadata={"topic": faq["topic"]})
+        for faq in FAQ_DOCUMENTS
+    ]
+    vs = FAISS.from_documents(documents, embeddings)
+    vs.save_local(index_path)
 
 
 def search_faq(question: str, k: int = 2) -> str:

@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import gspread
 from google.oauth2.service_account import Credentials
 from backend.config import settings
@@ -9,9 +11,14 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 
 def get_sheets_client():
-    creds = Credentials.from_service_account_file(
-        settings.google_service_account_key_path, scopes=SCOPES
-    )
+    google_creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY_JSON")
+    if google_creds_json:
+        info = json.loads(google_creds_json)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(
+            settings.google_service_account_key_path, scopes=SCOPES
+        )
     return gspread.authorize(creds)
 
 

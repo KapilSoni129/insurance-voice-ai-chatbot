@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+langgraph
+langchain
+langchain-openai
+langchain-community
+faiss-cpu
+gspread
+google-auth
+httpx
+pydantic-settings
+python-dotenv
+vapi_server_sdk
