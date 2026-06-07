@@ -59,10 +59,12 @@ Why FAISS over Pinecone/ChromaDB: zero external dependencies, runs in-process, m
 ### Call Flow UX Decisions
 
 - **Caller ID confirmation** — Agent sees incoming number via `{{customer.number}}` and asks "Is this the number on your account?" Eliminates the STT digit-capture problem for most callers.
-- **Silence timeout (15s)** — Prevents zombie calls. Reminder sent, then auto-hangup.
-- **End-call phrases** — "goodbye", "bye", "that's all" trigger automatic call end.
+- **Silence timeout via Vapi hooks** — Used `customer.speech.timeout` hook (platform-level, not LLM-dependent) with `timeoutSeconds: 15` and `triggerMaxCount: 2`. After 15s silence, Vapi says "Are you still there?" without going through GPT. After 2 unanswered prompts, call ends automatically. This required using the raw Vapi API (dot-notation `"customer.speech.timeout"`) since the SDK serializes the `on` field incorrectly.
+- **endCall tool** — Added Vapi's built-in `endCall` tool type so the LLM can programmatically hang up when the conversation is naturally concluded (caller says goodbye, confirms no more questions, or after escalation).
+- **End-call phrases** — "goodbye", "bye", "that's all" as backup auto-detection.
 - **Max duration (10 min)** — Hard safety cap.
-- **Pre-escalation data collection** — Before transferring, agent collects name, phone, and issue description so escalation team has context.
+- **Pre-escalation data collection** — Before escalating, agent collects name, phone, and issue description. After successful escalation, agent tells caller "Our escalation team will reach out to you shortly" then ends the call — no misleading "transferring now, please stay on the line."
+- **Escalation response design** — The tool result message says the escalation is logged and the team will call back, not that a live transfer is happening. This sets correct expectations since we don't have a real transfer destination.
 
 ### State Management
 
@@ -110,11 +112,31 @@ In-memory Python dict mapping `call_id → AgentState`. Appropriate for a single
 
 **Fix:** Check multiple possible locations (`message.durationSeconds`, `call.durationSeconds`, `artifact.durationSeconds`) with a fallback that computes duration from `call.startedAt` / `call.endedAt` timestamps.
 
+### Problem: Vapi Hooks SDK Serialization Mismatch
+
+**Symptom:** `400 Bad Request: "each value in hooks.property do should not exist"` when passing hooks via the Vapi Python SDK.
+
+**Investigation:**
+1. The SDK types (`CallHookCustomerSpeechTimeout`) serialize the `on` field as `"customer-speech-timeout"` (dashes)
+2. The Vapi API actually expects `"customer.speech.timeout"` (dots)
+3. The SDK also serializes `null` fields in the `do` array items, which the API rejects
+
+**Fix:** Bypass the SDK for hooks and use a raw `httpx.patch()` call to the Vapi REST API with the correct dot-notation format. Applied as a separate step after the main assistant create/update.
+
+### Problem: Silent Call Hangup Without Warning
+
+**Symptom:** Call ends after ~40s of silence with no "Are you still there?" prompt — just disconnects.
+
+**Investigation:** Vapi has a built-in idle timeout that fires at the platform level. Initially tried `silence_timeout_seconds` param (doesn't exist in SDK), then tried `end_call_phrases` (only triggers on speech, not silence). The correct mechanism is the `hooks` array with `customer.speech.timeout` event.
+
+**Fix:** Added hook via raw API: `timeoutSeconds: 15`, `triggerMaxCount: 2`, action: `say "Are you still there?"`. This fires at the platform level (not LLM), so it always triggers regardless of GPT state.
+
 ### Debugging Methodology
 
 1. **Structured logging at boundaries** — log what came in (tool name + params), what happened (auth result), what went back (formatted response). 3-4 lines per tool call, not 30.
 2. **Trace the data** — when something fails, follow the exact value through each transformation (raw STT → LLM interpretation → tool param → normalization → DB comparison).
 3. **Test in isolation** — verify each layer independently (can the function find the phone in the sheet? does the normalization work? is the webhook receiving the right format?).
+4. **SDK vs API divergence** — when SDK calls fail with cryptic errors, make the raw HTTP request directly to see what the API actually expects. SDKs can lag behind API changes.
 
 ---
 
